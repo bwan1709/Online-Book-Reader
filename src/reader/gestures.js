@@ -7,8 +7,15 @@ const MODEL_PATH = '/models/hand_landmarker.task';
 const SWIPE_WINDOW_MS = 250;
 const SWIPE_MIN_DISTANCE = 0.07; // fraction of frame width
 const SWIPE_MIN_SPEED = 0.5; // frame widths per second, measured over the last ~100 ms
-const SWIPE_COOLDOWN_MS = 450;
-const REVERSE_BLOCK_MS = 900; // ignore the hand drifting back after a flick
+const SWIPE_COOLDOWN_MS = 300;
+
+// After a flick the hand has to come back, and that return stroke looks exactly like a flick the
+// other way. So a flick and its return are treated as a pair: the next opposite movement is ignored
+// until the hand has travelled back and come to rest (or left the frame).
+const RETURN_MIN_DISTANCE = 0.04; // how far back the hand must travel for the return to count as done
+const REST_SPEED = 0.15; // frame widths per second; slower than this counts as resting
+const REST_MS = 180;
+const RETURN_TIMEOUT_MS = 6000; // safety net if the hand never comes back
 
 const PINCH_ON = 0.33; // thumb–index distance relative to palm size
 const PINCH_OFF = 0.5;
@@ -58,7 +65,7 @@ export class HandGestures {
     this.smooth = null;
     this.history = [];
     this.cooldownUntil = 0;
-    this.lastSwipe = { dir: null, t: 0 };
+    this.returning = null; // { blocked, sign, moved, restSince, start } while waiting for the return stroke
     this.lastVideoTime = -1;
     this.loop = this.loop.bind(this);
   }
@@ -130,6 +137,7 @@ export class HandGestures {
     if (this.pose === 'pinch') this.onPinchEnd();
     this.pose = pose;
     this.history.length = 0;
+    if (pose === 'fist') this.returning = null; // a fist is for moving the hand freely
     if (pose === 'pinch') {
       this.anchor = { ...this.smooth };
       this.onPinchStart();
@@ -144,6 +152,7 @@ export class HandGestures {
     this.draw(lm);
     if (!lm) {
       this.smooth = null;
+      this.returning = null; // hand dropped out of view: start fresh
       this.candidate = { pose: 'none', frames: 0 };
       this.setPose('none');
       return;
@@ -163,8 +172,22 @@ export class HandGestures {
     else if (this.pose === 'open') this.detectSwipe(this.smooth.x);
   }
 
+  /** Tracks the return stroke after a flick; clears once the hand is back and still. */
+  trackReturn(x, prev, now) {
+    const r = this.returning;
+    if (!r || !prev) return;
+    const dx = x - prev.x;
+    const speed = Math.abs(dx) / Math.max(0.016, (now - prev.t) / 1000);
+    if (Math.sign(dx) === r.sign) r.moved += Math.abs(dx);
+    if (speed < REST_SPEED) r.restSince ??= now;
+    else r.restSince = null;
+    const rested = r.restSince !== null && now - r.restSince > REST_MS;
+    if ((r.moved >= RETURN_MIN_DISTANCE && rested) || now - r.start > RETURN_TIMEOUT_MS) this.returning = null;
+  }
+
   detectSwipe(x) {
     const now = performance.now();
+    this.trackReturn(x, this.history[this.history.length - 1], now);
     this.history.push({ t: now, x });
     while (this.history.length && now - this.history[0].t > SWIPE_WINDOW_MS) this.history.shift();
     if (now < this.cooldownUntil || this.history.length < 3) return;
@@ -180,9 +203,16 @@ export class HandGestures {
     if (movedLeft >= SWIPE_MIN_DISTANCE && -speed >= SWIPE_MIN_SPEED) dir = 'next';
     else if (movedRight >= SWIPE_MIN_DISTANCE && speed >= SWIPE_MIN_SPEED) dir = 'prev';
     if (!dir) return;
-    if (this.lastSwipe.dir && this.lastSwipe.dir !== dir && now - this.lastSwipe.t < REVERSE_BLOCK_MS) return;
+    if (this.returning?.blocked === dir) return; // that's just the hand coming back
 
-    this.lastSwipe = { dir, t: now };
+    // "next" moves the hand left, so its return moves right (+x), and vice versa.
+    this.returning = {
+      blocked: dir === 'next' ? 'prev' : 'next',
+      sign: dir === 'next' ? 1 : -1,
+      moved: 0,
+      restSince: null,
+      start: now,
+    };
     this.cooldownUntil = now + SWIPE_COOLDOWN_MS;
     this.history.length = 0;
     this.onSwipe(dir);
