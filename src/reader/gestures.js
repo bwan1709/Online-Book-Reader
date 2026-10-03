@@ -10,12 +10,12 @@ const SWIPE_MIN_SPEED = 0.5; // frame widths per second, measured over the last 
 const SWIPE_COOLDOWN_MS = 300;
 
 // After a flick the hand has to come back, and that return stroke looks exactly like a flick the
-// other way. So a flick and its return are treated as a pair: the next opposite movement is ignored
-// until the hand has travelled back and come to rest (or left the frame).
-const RETURN_MIN_DISTANCE = 0.04; // how far back the hand must travel for the return to count as done
-const REST_SPEED = 0.15; // frame widths per second; slower than this counts as resting
-const REST_MS = 180;
-const RETURN_TIMEOUT_MS = 6000; // safety net if the hand never comes back
+// other way. So a flick and its return are treated as a pair: movement the other way is ignored until
+// the hand is back near where the flick started and holds still (or leaves the frame / makes a fist).
+// Both checks use positions, not summed motion, so landmark jitter can't fake a return.
+const RETURN_FRACTION = 0.6; // share of the flick's distance the hand must come back
+const REST_MS = 200;
+const REST_SPREAD = 0.025; // the hand counts as still if it stays within this range for REST_MS
 
 const PINCH_ON = 0.33; // thumb–index distance relative to palm size
 const PINCH_OFF = 0.5;
@@ -43,6 +43,7 @@ const STATUS = {
   open: '✋ Hất tay ← → để lật · 🤏 Chụm để kéo trang',
   pinch: '🤏 Đang giữ trang — kéo để lật',
   fist: '✊ Tạm dừng — xòe tay để tiếp tục',
+  returning: '↩ Đưa tay về giữa rồi dừng một nhịp',
 };
 
 /**
@@ -65,7 +66,7 @@ export class HandGestures {
     this.smooth = null;
     this.history = [];
     this.cooldownUntil = 0;
-    this.returning = null; // { blocked, sign, moved, restSince, start } while waiting for the return stroke
+    this.returning = null; // { blocked, sign, origin, end } while waiting for the return stroke
     this.lastVideoTime = -1;
     this.loop = this.loop.bind(this);
   }
@@ -172,24 +173,34 @@ export class HandGestures {
     else if (this.pose === 'open') this.detectSwipe(this.smooth.x);
   }
 
-  /** Tracks the return stroke after a flick; clears once the hand is back and still. */
-  trackReturn(x, prev, now) {
+  /** True when the hand has stayed within a small range for the last REST_MS. */
+  isStill(now) {
+    const recent = this.history.filter((h) => now - h.t <= REST_MS);
+    if (recent.length < 4 || now - recent[0].t < REST_MS * 0.8) return false;
+    const xs = recent.map((h) => h.x);
+    return Math.max(...xs) - Math.min(...xs) < REST_SPREAD;
+  }
+
+  /** Follows the return stroke after a flick; ends the pair once the hand is back and still. */
+  trackReturn(x, now) {
     const r = this.returning;
-    if (!r || !prev) return;
-    const dx = x - prev.x;
-    const speed = Math.abs(dx) / Math.max(0.016, (now - prev.t) / 1000);
-    if (Math.sign(dx) === r.sign) r.moved += Math.abs(dx);
-    if (speed < REST_SPEED) r.restSince ??= now;
-    else r.restSince = null;
-    const rested = r.restSince !== null && now - r.restSince > REST_MS;
-    if ((r.moved >= RETURN_MIN_DISTANCE && rested) || now - r.start > RETURN_TIMEOUT_MS) this.returning = null;
+    if (!r) return;
+    // The flick may keep travelling after it was recognised: follow its far end.
+    if ((x - r.end) * r.sign < 0) r.end = x;
+    const distance = Math.max(Math.abs(r.origin - r.end), SWIPE_MIN_DISTANCE);
+    const back = ((x - r.end) * r.sign) / distance; // 0 at the far end, 1 back at the start
+    if (back >= RETURN_FRACTION && this.isStill(now)) {
+      this.returning = null;
+      this.history.length = 0; // the return stroke must not count towards the next flick
+      this.onStatus(STATUS.open);
+    }
   }
 
   detectSwipe(x) {
     const now = performance.now();
-    this.trackReturn(x, this.history[this.history.length - 1], now);
     this.history.push({ t: now, x });
     while (this.history.length && now - this.history[0].t > SWIPE_WINDOW_MS) this.history.shift();
+    this.trackReturn(x, now);
     if (now < this.cooldownUntil || this.history.length < 3) return;
 
     // Distance from the furthest point in the window, plus recent speed.
@@ -205,17 +216,17 @@ export class HandGestures {
     if (!dir) return;
     if (this.returning?.blocked === dir) return; // that's just the hand coming back
 
-    // "next" moves the hand left, so its return moves right (+x), and vice versa.
+    // "next" moves the hand left (−x), so its return moves right (+x), and vice versa.
     this.returning = {
       blocked: dir === 'next' ? 'prev' : 'next',
       sign: dir === 'next' ? 1 : -1,
-      moved: 0,
-      restSince: null,
-      start: now,
+      origin: dir === 'next' ? Math.max(...xs) : Math.min(...xs),
+      end: x,
     };
     this.cooldownUntil = now + SWIPE_COOLDOWN_MS;
     this.history.length = 0;
     this.onSwipe(dir);
+    this.onStatus(STATUS.returning);
   }
 
   draw(lm) {
