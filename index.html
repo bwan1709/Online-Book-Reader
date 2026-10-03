@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#060607" />
+    <title>NEXVS — Thư viện tri thức</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 fill=%22%230b0a0c%22/%3E%3Ctext x=%2216%22 y=%2224%22 font-family=%22serif%22 font-size=%2222%22 font-weight=%22700%22 fill=%22%23e8e2d4%22 text-anchor=%22middle%22%3EN%3C/text%3E%3Crect x=%229%22 y=%2227%22 width=%2214%22 height=%222%22 fill=%22%23c8102e%22/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500&family=Cinzel:wght@700&family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=EB+Garamond:ital,wght@0,400;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body data-view="home">
+    <canvas id="scene"></canvas>
+
+    <!-- ================= Home ================= -->
+    <section id="home">
+      <header class="topbar">
+        <span class="logo">NEXVS</span>
+        <span class="topbar-meta">Thư viện tri thức · MMXXVI</span>
+      </header>
+
+      <div class="hero">
+        <p class="eyebrow reveal" style="--d: 0">Không gian đọc tối giản</p>
+        <h1 class="reveal" style="--d: 1">Tri thức chỉ lớn lên<br /><em>khi được chia sẻ.</em></h1>
+        <p class="lead reveal" style="--d: 2">
+          Mười cuốn sách, một trang giấy lật như thật. Đọc bằng chuột, bàn phím — hoặc chỉ bằng một cái hất tay
+          trước camera. Click vào khoảng trống để ngắm toàn màn hình.
+        </p>
+        <button class="cta reveal" id="enter" style="--d: 3">
+          <span>Vào thư viện</span>
+          <i>→</i>
+        </button>
+      </div>
+
+      <figure class="quote" id="quote">
+        <blockquote id="quote-text"></blockquote>
+        <p id="quote-vi"></p>
+        <figcaption id="quote-author"></figcaption>
+      </figure>
+    </section>
+
+    <!-- ================= Library ================= -->
+    <section id="library">
+      <div class="lib-inner">
+        <header class="lib-head">
+          <button class="back" id="lib-back">← Trang chủ</button>
+          <p class="eyebrow">Thư viện</p>
+          <h2>Chọn một cuốn sách</h2>
+          <p class="lib-desc">
+            Bìa sách được tải trực tiếp từ Open Library. Sách đã hết bản quyền đọc được toàn văn — bản tiếng Việt từ
+            Wikisource, bản tiếng Anh từ Project Gutenberg; sách còn bản quyền có phần giới thiệu và cho phép gắn file
+            PDF của bạn.
+          </p>
+          <div class="lib-storage" id="lib-storage"></div>
+          <nav class="lib-tabs" id="lib-tabs"></nav>
+        </header>
+        <div class="lib-grid" id="lib-grid"></div>
+      </div>
+      <input type="file" id="lib-file" accept="application/pdf,.pdf" hidden />
+    </section>
+
+    <!-- ================= Reader ================= -->
+    <div id="reader-ui">
+      <header class="r-bar">
+        <div class="r-brand">
+          <span class="r-logo">NEXVS</span>
+          <span class="r-sep"></span>
+          <span class="r-title" id="r-title"></span>
+        </div>
+        <nav class="r-actions">
+          <button class="r-btn" id="r-edition" title="Đổi bản dịch" hidden></button>
+          <button class="r-btn" id="r-attach" hidden>Gắn PDF</button>
+          <button class="r-btn" id="r-gesture" title="Lật trang bằng cử chỉ tay (G)">✋<span class="lbl"> Cử chỉ</span></button>
+          <button class="r-btn" id="r-fullscreen" title="Toàn màn hình (F)">⛶</button>
+          <button class="r-btn r-exit" id="r-exit" title="Về thư viện"><span class="lbl">Thư viện </span>✕</button>
+        </nav>
+        <input type="file" id="r-file" accept="application/pdf,.pdf" hidden />
+      </header>
+
+      <footer class="r-controls">
+        <button class="r-arrow" id="r-prev" title="Trang trước (←)">‹</button>
+        <div class="r-progress">
+          <div class="r-page" id="r-page"></div>
+          <input type="range" id="r-slider" min="0" max="1" step="1" value="0" />
+        </div>
+        <button class="r-arrow" id="r-next" title="Trang sau (→)">›</button>
+      </footer>
+
+      <div class="r-cam" id="r-cam">
+        <div class="r-cam-view">
+          <video id="r-video" playsinline muted></video>
+          <canvas id="r-overlay"></canvas>
+          <div class="r-cam-status" id="r-cam-status">Camera đang tắt</div>
+        </div>
+      </div>
+
+      <div class="r-flash" id="r-flash"></div>
+      <div class="r-toast" id="r-toast"></div>
+    </div>
+
+    <div class="immersive-hint" id="immersive-hint">Click hoặc nhấn Esc để thoát</div>
+    <div class="drop" id="drop"><span>Thả file PDF để đọc</span></div>
+    <div class="fade" id="fade"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
