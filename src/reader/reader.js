@@ -2,10 +2,31 @@ import * as THREE from 'three';
 import { ReaderBook } from './readerBook.js';
 import { PageCache } from './pageCache.js';
 import { HandGestures } from './gestures.js';
-import { attachPdf, detachPdf } from './storage.js';
+import {
+  attachPdf,
+  detachPdf,
+  getBookmarks,
+  addBookmark,
+  removeBookmark,
+  updateBookmarkNote,
+  getReadingProgress,
+  saveReadingProgress,
+} from './storage.js';
 
 const $ = (id) => document.getElementById(id);
 const PINCH_TRAVEL = 0.2; // hand travel (fraction of frame) for a full turn
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+function formatBmDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (isToday) return `Hôm nay ${timeStr}`;
+  return `${d.getDate()}/${d.getMonth() + 1} ${timeStr}`;
+}
 
 /** Full-screen ebook mode. */
 export class Reader {
@@ -21,6 +42,11 @@ export class Reader {
     this.book = null;
     this.shelfBook = null;
     this.attached = false;
+    this.bookKey = '';
+    this.bookmarks = [];
+    this.drawerOpen = false;
+    this.progressTimer = null;
+    this.restoringProgress = false;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0a0809);
@@ -75,6 +101,14 @@ export class Reader {
       camStatus: $('r-cam-status'),
       flash: $('r-flash'),
       toast: $('r-toast'),
+      bmToggle: $('r-bookmark-toggle'),
+      bmListBtn: $('r-bookmark-list'),
+      bmBadge: $('r-bm-badge'),
+      bmDrawer: $('r-bookmarks-drawer'),
+      bmClose: $('r-bm-close'),
+      bmBackdrop: $('r-drawer-backdrop'),
+      bmList: $('r-bm-list'),
+      bmEmpty: $('r-bm-empty'),
     };
 
     this.gestures = new HandGestures({
@@ -112,68 +146,188 @@ export class Reader {
     this.book.onChange = (s) => this.updatePageLabel(s);
     this.scene.add(this.book.group);
     this.shadow.scale.set(this.book.W * 2 * 1.5, this.book.H * 1.45, 1);
-    this.ui.title.textContent = shelfBook ? `${shelfBook.title} — ${shelfBook.author}` : source.title;
+    this.ui.title.textContent = shelfBook?.author
+      ? `${shelfBook.title} — ${shelfBook.author}`
+      : shelfBook?.title || source.title;
     this.ui.slider.max = String(this.book.maxSpread);
     this.side = 'right';
     this.fit();
     this.focusX = this.focusTarget();
-    this.updatePageLabel(this.book.spread);
 
     this.shelfBook = shelfBook;
     this.attached = attached;
-    this.ui.attach.hidden = !(shelfBook && !shelfBook.editions);
+    this.ui.attach.hidden = !(shelfBook && !shelfBook.editions && !shelfBook.isOwn);
     this.ui.attach.textContent = attached ? 'Gỡ PDF' : 'Gắn PDF';
 
     this.edition = edition;
     this.ui.edition.hidden = !(edition && shelfBook.editions.length > 1);
     if (edition) this.ui.edition.innerHTML = `<span class="lbl">Bản: </span>${edition.label} ⇄`;
+
+    this.bookKey = shelfBook?.id
+      ? edition?.id
+        ? `${shelfBook.id}:${edition.id}`
+        : shelfBook.id
+      : source?.title
+        ? `own:${source.title}`
+        : 'unknown';
+
+    this.updatePageLabel(this.book.spread);
+    this.loadBookState();
   }
 
-  /** Cycles to the next edition (e.g. Tiếng Việt ⇄ English) of the open book. */
-  async switchEdition() {
-    const book = this.shelfBook;
-    if (!book?.editions || this.switching) return;
-    const list = book.editions;
-    const next = list[(list.indexOf(this.edition) + 1) % list.length];
-    this.switching = true;
-    this.toast(`Đang mở bản ${next.label}…`);
-    try {
-      await this.hooks.onReload(book, next.id, (p) => this.toast(`Đang dàn trang ${Math.round(p * 100)}%`));
-      this.toast(`${next.title} — ${next.credit}`);
-    } finally {
-      this.switching = false;
+  async loadBookState() {
+    await this.loadBookmarks();
+    await this.restoreReadingProgress();
+  }
+
+  async loadBookmarks() {
+    if (!this.bookKey) return;
+    this.bookmarks = await getBookmarks(this.bookKey);
+    this.updateBookmarkUi();
+  }
+
+  async restoreReadingProgress() {
+    if (!this.bookKey || !this.book) return;
+    const saved = await getReadingProgress(this.bookKey);
+    if (saved !== null && saved > 0 && saved <= this.book.maxSpread) {
+      this.restoringProgress = true;
+      this.jumpTo(saved);
+      this.restoringProgress = false;
+      const label = this.getCurrentPageLabel(saved);
+      this.toast(`Tiếp tục đọc từ trang ${label}`);
     }
   }
 
-  async onAttachClick() {
-    const book = this.shelfBook;
-    if (!book) return;
-    if (this.attached) {
-      await detachPdf(book.id);
-      this.toast('Đã gỡ PDF');
-      this.hooks.onReload(book);
-      return;
-    }
-    this.ui.file.click();
-  }
-
-  async onFileChosen(file) {
-    if (!file || !this.shelfBook) return;
-    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
-      this.toast('Hãy chọn một file PDF');
-      return;
-    }
-    await attachPdf(this.shelfBook.id, file);
-    this.toast(`Đã gắn ${file.name} cho "${this.shelfBook.title}"`);
-    this.hooks.onReload(this.shelfBook);
+  getCurrentPageLabel(s = this.book?.spread ?? 0) {
+    if (!this.book) return '';
+    const n = this.book.pageCount;
+    const pages = this.single
+      ? [this.side === 'left' ? 2 * s : 2 * s + 1]
+      : [2 * s, 2 * s + 1].filter((p) => p >= 1 && p <= n);
+    return pages.length ? pages.join('–') : `${s}`;
   }
 
   updatePageLabel(s) {
     const n = this.book.pageCount;
-    // Spread s shows pages 2s (left) and 2s+1 (right), counting from 1.
-    const pages = this.single ? [this.side === 'left' ? 2 * s : 2 * s + 1] : [2 * s, 2 * s + 1].filter((p) => p >= 1 && p <= n);
-    this.ui.page.innerHTML = `Trang <b>${pages.join('–')}</b> / ${n}`;
+    const label = this.getCurrentPageLabel(s);
+    this.ui.page.innerHTML = `Trang <b>${label}</b> / ${n}`;
     this.ui.slider.value = String(s);
+    this.updateBookmarkButton();
+    if (!this.restoringProgress) {
+      this.scheduleSaveProgress(s);
+    }
+  }
+
+  scheduleSaveProgress(s) {
+    clearTimeout(this.progressTimer);
+    this.progressTimer = setTimeout(() => {
+      if (this.bookKey && this.book) {
+        saveReadingProgress(this.bookKey, s);
+      }
+    }, 600);
+  }
+
+  // ---------- Bookmarks ----------
+  updateBookmarkUi() {
+    this.updateBookmarkButton();
+    const count = this.bookmarks.length;
+    this.ui.bmBadge.hidden = count === 0;
+    this.ui.bmBadge.textContent = String(count);
+    if (this.drawerOpen) this.renderBookmarkList();
+  }
+
+  updateBookmarkButton() {
+    if (!this.ui.bmToggle) return;
+    const s = this.book?.spread ?? 0;
+    const isBookmarked = this.bookmarks.some((b) => b.spread === s);
+    this.ui.bmToggle.classList.toggle('on', isBookmarked);
+    const lbl = this.ui.bmToggle.querySelector('.lbl');
+    if (lbl) lbl.textContent = isBookmarked ? ' Đã lưu' : ' Đánh dấu';
+    this.ui.bmToggle.title = isBookmarked ? 'Bỏ đánh dấu trang này (B)' : 'Đánh dấu trang này (B)';
+  }
+
+  async toggleBookmark() {
+    if (!this.book || !this.bookKey || this.book.busy) return;
+    const s = this.book.spread;
+    const existing = this.bookmarks.find((b) => b.spread === s);
+    const label = this.getCurrentPageLabel(s);
+    if (existing) {
+      this.bookmarks = await removeBookmark(this.bookKey, existing.id);
+      this.toast(`Đã gỡ dấu ${existing.pageLabel}`);
+    } else {
+      const pageLabel = `Trang ${label}`;
+      const res = await addBookmark(this.bookKey, { spread: s, pageLabel });
+      this.bookmarks = res.list;
+      this.flash('🔖');
+      this.toast(`Đã đánh dấu ${pageLabel}`);
+    }
+    this.updateBookmarkUi();
+  }
+
+  toggleBookmarkDrawer() {
+    this.drawerOpen ? this.closeBookmarkDrawer() : this.openBookmarkDrawer();
+  }
+
+  openBookmarkDrawer() {
+    this.drawerOpen = true;
+    this.ui.bmDrawer?.classList.add('open');
+    this.ui.bmDrawer?.setAttribute('aria-hidden', 'false');
+    this.renderBookmarkList();
+  }
+
+  closeBookmarkDrawer() {
+    this.drawerOpen = false;
+    this.ui.bmDrawer?.classList.remove('open');
+    this.ui.bmDrawer?.setAttribute('aria-hidden', 'true');
+  }
+
+  renderBookmarkList() {
+    if (!this.ui.bmList || !this.ui.bmEmpty) return;
+    const list = this.bookmarks;
+    this.ui.bmEmpty.hidden = list.length > 0;
+    this.ui.bmList.innerHTML = '';
+    const currentSpread = this.book?.spread;
+
+    for (const bm of list) {
+      const el = document.createElement('div');
+      el.className = `r-bm-item${currentSpread === bm.spread ? ' current' : ''}`;
+      el.innerHTML = `
+        <div class="r-bm-item-info">
+          <span class="r-bm-item-page">${escapeHtml(bm.pageLabel)}</span>
+          ${bm.note ? `<span class="r-bm-item-note">${escapeHtml(bm.note)}</span>` : ''}
+          <span class="r-bm-item-date">${formatBmDate(bm.createdAt)}</span>
+        </div>
+        <div class="r-bm-item-actions">
+          <button class="r-bm-item-action edit" title="Ghi chú">✎</button>
+          <button class="r-bm-item-action del" title="Xoá dấu trang">✕</button>
+        </div>
+      `;
+
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.r-bm-item-action')) return;
+        this.jumpTo(bm.spread);
+        this.flash('🔖');
+        this.closeBookmarkDrawer();
+      });
+
+      el.querySelector('.r-bm-item-action.edit')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const note = prompt('Ghi chú cho dấu trang này:', bm.note || '');
+        if (note !== null) {
+          this.bookmarks = await updateBookmarkNote(this.bookKey, bm.id, note);
+          this.updateBookmarkUi();
+        }
+      });
+
+      el.querySelector('.r-bm-item-action.del')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        this.bookmarks = await removeBookmark(this.bookKey, bm.id);
+        this.updateBookmarkUi();
+        this.toast(`Đã xoá dấu ${bm.pageLabel}`);
+      });
+
+      this.ui.bmList.append(el);
+    }
   }
 
   // ---------- Navigation (handles single-page mode) ----------
@@ -246,7 +400,10 @@ export class Reader {
   // ---------- Activation ----------
   setActive(value) {
     this.active = value;
-    if (!value && this.gestures.running) this.toggleGestures();
+    if (!value) {
+      if (this.drawerOpen) this.closeBookmarkDrawer();
+      if (this.gestures.running) this.toggleGestures();
+    }
   }
 
   async toggleGestures() {
@@ -305,6 +462,10 @@ export class Reader {
       this.ui.file.value = '';
     });
     this.ui.gesture.addEventListener('click', () => this.toggleGestures());
+    this.ui.bmToggle?.addEventListener('click', () => this.toggleBookmark());
+    this.ui.bmListBtn?.addEventListener('click', () => this.toggleBookmarkDrawer());
+    this.ui.bmClose?.addEventListener('click', () => this.closeBookmarkDrawer());
+    this.ui.bmBackdrop?.addEventListener('click', () => this.closeBookmarkDrawer());
     $('r-fullscreen').addEventListener('click', () => this.toggleFullscreen());
     this.ui.slider.addEventListener('input', () => this.jumpTo(Number(this.ui.slider.value)));
   }
@@ -319,6 +480,12 @@ export class Reader {
       else if (k === 'End') this.jumpTo(this.book.maxSpread);
       else if (k === 'f' || k === 'F') this.toggleFullscreen();
       else if (k === 'g' || k === 'G') this.toggleGestures();
+      else if (k === 'b' || k === 'B') this.toggleBookmark();
+      else if (k === 'Escape' && this.drawerOpen) {
+        this.closeBookmarkDrawer();
+        e.preventDefault();
+        return;
+      }
       else return;
       e.preventDefault();
     });

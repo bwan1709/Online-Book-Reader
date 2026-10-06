@@ -16,9 +16,9 @@ const attachedFile = (bookId) => `nexvs-${bookId}.pdf`;
 let dbPromise;
 function db() {
   dbPromise ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 2);
+    const req = indexedDB.open(DB_NAME, 3);
     req.onupgradeneeded = () => {
-      for (const name of ['pdfs', 'meta', 'settings']) {
+      for (const name of ['pdfs', 'meta', 'settings', 'bookmarks', 'progress']) {
         if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name);
       }
     };
@@ -204,8 +204,114 @@ export async function removeOwnBook(id) {
   await idbDel('pdfs', id).catch(() => {});
   await idbDel('meta', id).catch(() => {});
   await idbDel('meta', `thumb:${id}`).catch(() => {});
+  await idbDel('bookmarks', id).catch(() => {});
+  await idbDel('progress', id).catch(() => {});
 }
 
 // Cover thumbnails (first page) are cached in the browser; they're cheap to regenerate if lost.
 export const getThumb = (id) => idbGet('meta', `thumb:${id}`).catch(() => undefined);
 export const setThumb = (id, dataUrl) => idbPut('meta', `thumb:${id}`, dataUrl).catch(() => {});
+
+// ---------- Bookmarks & Reading Progress ----------
+/**
+ * @param {string} bookKey
+ * @returns {Promise<Array<{ id: string, spread: number, pageLabel: string, note?: string, createdAt: number }>>}
+ */
+export async function getBookmarks(bookKey) {
+  try {
+    return (await idbGet('bookmarks', bookKey)) || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * @param {string} bookKey
+ * @param {{ spread: number, pageLabel: string, note?: string }} bookmark
+ */
+export async function addBookmark(bookKey, bookmark) {
+  try {
+    const list = (await idbGet('bookmarks', bookKey)) || [];
+    const item = {
+      id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      spread: bookmark.spread,
+      pageLabel: bookmark.pageLabel,
+      note: bookmark.note || '',
+      createdAt: Date.now(),
+    };
+    const idx = list.findIndex((b) => b.spread === bookmark.spread);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...item };
+    } else {
+      list.push(item);
+      list.sort((a, b) => a.spread - b.spread);
+    }
+    await idbPut('bookmarks', bookKey, list);
+    return { list, item };
+  } catch (err) {
+    console.error('Failed to add bookmark', err);
+    return { list: [], item: null };
+  }
+}
+
+/**
+ * @param {string} bookKey
+ * @param {string|number} idOrSpread
+ */
+export async function removeBookmark(bookKey, idOrSpread) {
+  try {
+    const list = (await idbGet('bookmarks', bookKey)) || [];
+    const filtered = list.filter((b) => b.id !== idOrSpread && b.spread !== idOrSpread);
+    await idbPut('bookmarks', bookKey, filtered);
+    return filtered;
+  } catch (err) {
+    console.error('Failed to remove bookmark', err);
+    return [];
+  }
+}
+
+/**
+ * @param {string} bookKey
+ * @param {string} id
+ * @param {string} note
+ */
+export async function updateBookmarkNote(bookKey, id, note) {
+  try {
+    const list = (await idbGet('bookmarks', bookKey)) || [];
+    const item = list.find((b) => b.id === id);
+    if (item) {
+      item.note = note.trim();
+      await idbPut('bookmarks', bookKey, list);
+    }
+    return list;
+  } catch (err) {
+    console.error('Failed to update bookmark note', err);
+    return [];
+  }
+}
+
+/**
+ * @param {string} bookKey
+ * @returns {Promise<number | null>}
+ */
+export async function getReadingProgress(bookKey) {
+  try {
+    const record = await idbGet('progress', bookKey);
+    return record?.spread ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} bookKey
+ * @param {number} spread
+ */
+export async function saveReadingProgress(bookKey, spread) {
+  try {
+    await idbPut('progress', bookKey, { spread, updatedAt: Date.now() });
+  } catch (err) {
+    console.error('Failed to save progress', err);
+  }
+}
+

@@ -74,6 +74,8 @@
         <nav class="r-actions">
           <button class="r-btn" id="r-edition" title="Đổi bản dịch" hidden></button>
           <button class="r-btn" id="r-attach" hidden>Gắn PDF</button>
+          <button class="r-btn" id="r-bookmark-toggle" title="Đánh dấu trang này (B)"><span class="bm-icon">🔖</span><span class="lbl"> Đánh dấu</span></button>
+          <button class="r-btn" id="r-bookmark-list" title="Danh sách trang đánh dấu">📑<span class="lbl"> Dấu trang</span><span class="bm-badge" id="r-bm-badge" hidden>0</span></button>
           <button class="r-btn" id="r-gesture" title="Lật trang bằng cử chỉ tay (G)">✋<span class="lbl"> Cử chỉ</span></button>
           <button class="r-btn" id="r-fullscreen" title="Toàn màn hình (F)">⛶</button>
           <button class="r-btn r-exit" id="r-exit" title="Về thư viện"><span class="lbl">Thư viện </span>✕</button>
@@ -89,6 +91,26 @@
         </div>
         <button class="r-arrow" id="r-next" title="Trang sau (→)">›</button>
       </footer>
+
+      <!-- Bookmark Drawer -->
+      <aside class="r-drawer" id="r-bookmarks-drawer" aria-hidden="true">
+        <div class="r-drawer-backdrop" id="r-drawer-backdrop"></div>
+        <div class="r-drawer-panel">
+          <div class="r-drawer-head">
+            <div class="r-drawer-title">
+              <span class="r-drawer-icon">🔖</span>
+              <h3>Dấu trang</h3>
+            </div>
+            <button class="r-drawer-close" id="r-bm-close" title="Đóng danh sách">✕</button>
+          </div>
+          <div class="r-bm-empty" id="r-bm-empty">
+            <div class="r-bm-empty-icon">📖</div>
+            <p>Chưa có trang nào được đánh dấu</p>
+            <span class="r-bm-hint">Nhấn <b>🔖 Đánh dấu</b> hoặc phím <b>B</b> khi đang đọc</span>
+          </div>
+          <div class="r-bm-list" id="r-bm-list"></div>
+        </div>
+      </aside>
 
       <div class="r-cam" id="r-cam">
         <div class="r-cam-view">

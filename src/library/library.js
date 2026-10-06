@@ -294,7 +294,7 @@ export class Library {
       if (!file) throw new Error('File không còn trong thư mục');
       const source = await openPdf(file);
       source.title = book.name;
-      this.onOpen(source, null, false, null);
+      this.onOpen(source, { id: book.id, title: book.name, isOwn: true }, false, null);
     });
   }
 
@@ -304,10 +304,10 @@ export class Library {
       alert('Hãy chọn một file PDF');
       return;
     }
-    await addOwnBook(file);
+    const id = await addOwnBook(file);
     const source = await openPdf(file);
     source.title = file.name.replace(/\.pdf$/i, '');
-    this.onOpen(source, null, false, null);
+    this.onOpen(source, { id, title: source.title, isOwn: true }, false, null);
     this.refresh();
   }
 
